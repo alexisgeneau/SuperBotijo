@@ -4,7 +4,7 @@
 import type { OperationResult } from "./index";
 import { getActivities } from "@/lib/activities-db"
 import { getAgentDefaults } from "@/lib/agent-auto-config"
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 
 const OPENCLAW_DIR = process.env.OPENCLAW_DIR || "/home/daniel/.openclaw";
@@ -375,7 +375,35 @@ export async function getAgentMood(
 }
 
 /**
- * Register a new agent
+ * Read openclaw.json config
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function readOpenClawConfig(): any {
+  const configPath = join(OPENCLAW_DIR, "openclaw.json");
+  try {
+    if (existsSync(configPath)) {
+      return JSON.parse(readFileSync(configPath, "utf-8"));
+    }
+  } catch (error) {
+    console.error("[agent-ops] Error reading openclaw.json:", error);
+  }
+  // Return default structure if file doesn't exist
+  return { agents: { list: [] } };
+}
+
+/**
+ * Write openclaw.json config
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function writeOpenClawConfig(config: any): void {
+  const configPath = join(OPENCLAW_DIR, "openclaw.json");
+  // Ensure directory exists
+  mkdirSync(OPENCLAW_DIR, { recursive: true });
+  writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+}
+
+/**
+ * Register a new agent (persisted to openclaw.json + workspace created)
  */
 export async function registerAgent(
   id: string,
@@ -383,9 +411,38 @@ export async function registerAgent(
   model: string
 ): Promise<OperationResult<AgentInfo>> {
   try {
+    // Check in-memory registry
     if (agentRegistry.has(id)) {
       return { success: false, error: "Agent already exists" };
     }
+
+    // Check in openclaw.json too
+    const config = readOpenClawConfig();
+    if (!config.agents) config.agents = { list: [] };
+    if (!config.agents.list) config.agents.list = [];
+
+    const existsInConfig = config.agents.list.some(
+      (a: { id: string }) => a.id === id
+    );
+    if (existsInConfig) {
+      return { success: false, error: "Agent already exists in config" };
+    }
+
+    // Add agent to openclaw.json
+    config.agents.list.push({
+      id,
+      name,
+      model,
+    });
+    writeOpenClawConfig(config);
+
+    // Create workspace directory
+    const workspacePath = join(OPENCLAW_DIR, "workspace", id);
+    mkdirSync(workspacePath, { recursive: true });
+
+    // Create IDENTITY.md in workspace
+    const identityContent = `# ${name}\n\n**Role:** Agent\n**ID:** ${id}\n**Model:** ${model}\n`;
+    writeFileSync(join(workspacePath, "IDENTITY.md"), identityContent, "utf-8");
 
     const defaults = getAgentDefaults(id, name);
     const agent: AgentInfo = {
@@ -398,7 +455,7 @@ export async function registerAgent(
       tokensUsed: 0,
       sessionCount: 0,
       activeSessions: 0,
-      workspace: join(OPENCLAW_DIR, "workspace", id),
+      workspace: workspacePath,
     };
 
     agentRegistry.set(id, agent);
@@ -413,19 +470,25 @@ export async function registerAgent(
 }
 
 /**
- * unregister an agent
+ * Unregister an agent (removed from openclaw.json)
  */
 export async function unregisterAgent(id: string): Promise<OperationResult> {
   try {
-    if (!agentRegistry.has(id)) {
-      return { success: false, error: "Agent not found" };
-    }
-
     // Don't allow unregistering the main agent
     if (id === "superbotijo") {
       return { success: false, error: "Cannot unregister main agent" };
     }
 
+    // Remove from openclaw.json
+    const config = readOpenClawConfig();
+    if (config.agents?.list) {
+      config.agents.list = config.agents.list.filter(
+        (a: { id: string }) => a.id !== id
+      );
+      writeOpenClawConfig(config);
+    }
+
+    // Remove from in-memory registry
     agentRegistry.delete(id);
     agentMoods.delete(id);
 
