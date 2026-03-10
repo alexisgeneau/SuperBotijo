@@ -50,6 +50,7 @@
     "memory": "Memory",
     "files": "Files",
     "analytics": "Analytics",
+    "skills": "Skills",
     "terminal": "Terminal",
     "system": "System",
     "settings": "Settings",
@@ -83,6 +84,10 @@
     "analytics": {
       "title": "Analytics & Costs",
       "description": "Track token usage, costs by model, and budget. Keep your AI spending under control."
+    },
+    "skills": {
+      "title": "Skills Manager",
+      "description": "Browse, install, and manage agent skills. Search ClawHub for new capabilities."
     },
     "terminal": {
       "title": "Terminal",

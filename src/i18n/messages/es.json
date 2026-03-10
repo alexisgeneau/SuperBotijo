@@ -49,6 +49,7 @@
     "memory": "Memoria",
     "files": "Archivos",
     "analytics": "Analíticas",
+    "skills": "Skills",
     "terminal": "Terminal",
     "system": "Sistema",
     "settings": "Config",
@@ -181,6 +182,10 @@
     "analytics": {
       "title": "Analíticas y Costos",
       "description": "Seguimiento de uso de tokens, costos por modelo y presupuesto. Mantener el gasto en IA bajo control."
+    },
+    "skills": {
+      "title": "Gestor de Skills",
+      "description": "Buscar, instalar y gestionar skills de agentes. Buscar nuevas capacidades en ClawHub."
     },
     "terminal": {
       "title": "Terminal",

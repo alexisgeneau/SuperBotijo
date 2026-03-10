@@ -15,6 +15,7 @@ import {
   Server,
   LayoutGrid,
   Box,
+  Puzzle,
 } from "lucide-react";
 
 interface DockItem {
@@ -30,6 +31,7 @@ function DockItems(): DockItem[] {
     { href: "/agents", labelKey: "dock.agents", helpKey: "help.agents", icon: Users },
     { href: "/office", labelKey: "dock.office", helpKey: "help.office", icon: Box },
     { href: "/kanban", labelKey: "dock.kanban", helpKey: "help.kanban", icon: LayoutGrid },
+    { href: "/skills", labelKey: "dock.skills", helpKey: "help.skills", icon: Puzzle },
     { href: "/memory", labelKey: "dock.memory", helpKey: "help.memory", icon: Brain },
     { href: "/files", labelKey: "dock.files", helpKey: "help.files", icon: FolderOpen },
     { href: "/analytics", labelKey: "dock.analytics", helpKey: "help.analytics", icon: DollarSign },
