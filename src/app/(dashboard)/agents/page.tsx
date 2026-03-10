@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   Bot,
   Circle,
@@ -14,8 +14,12 @@ import {
   Zap,
   TrendingUp,
   Clock,
+  Plus,
+  Trash2,
 } from "lucide-react";
 import { AgentOrganigrama } from "@/components/AgentOrganigrama";
+import { AgentCreateModal } from "@/components/AgentCreateModal";
+import { AgentInspectPanel } from "@/components/AgentInspectPanel";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { PageHeader } from "@/components/PageHeader";
 import { useI18n } from "@/i18n/provider";
@@ -91,15 +95,13 @@ export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"cards" | "organigrama">("cards");
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [inspectAgentId, setInspectAgentId] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<Agent | null>(null);
+  const [notification, setNotification] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const { t } = useI18n();
 
-  useEffect(() => {
-    fetchAgents();
-    const interval = setInterval(fetchAgents, 10000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const fetchAgents = async () => {
+  const fetchAgents = useCallback(async () => {
     try {
       const res = await fetch("/api/agents");
       const data = await res.json();
@@ -108,6 +110,72 @@ export default function AgentsPage() {
       console.error("Error fetching agents:", error);
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAgents();
+    const interval = setInterval(fetchAgents, 10000);
+    return () => clearInterval(interval);
+  }, [fetchAgents]);
+
+  const showNotification = (message: string, type: "success" | "error") => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 3000);
+  };
+
+  const handleCreateAgent = async (agentConfig: {
+    id: string;
+    name: string;
+    type: string;
+    model: string;
+    systemPrompt: string;
+    skills: string[];
+    temperature: number;
+    maxTokens: number;
+    autoStart: boolean;
+    heartbeatInterval: number;
+  }) => {
+    const res = await fetch("/api/agents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(agentConfig),
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || t("agents.createFailed"));
+    }
+
+    showNotification(t("agents.createSuccess"), "success");
+    await fetchAgents();
+  };
+
+  const handleDeleteAgent = async (agent: Agent) => {
+    try {
+      const res = await fetch(`/api/agents/${agent.id}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || t("agents.deleteFailed"));
+      }
+
+      showNotification(t("agents.deleteSuccess").replace("{name}", agent.name), "success");
+      setDeleteConfirm(null);
+      await fetchAgents();
+    } catch (error) {
+      showNotification(
+        error instanceof Error ? error.message : t("agents.deleteFailed"),
+        "error"
+      );
+    }
+  };
+
+  const handleInspectAction = (action: string, agentId: string) => {
+    if (action === "refresh") {
+      fetchAgents();
     }
   };
 
@@ -148,30 +216,58 @@ export default function AgentsPage() {
           helpDescription={t("help.agents.description")}
         />
 
-        <div className="flex gap-2 mb-6 border-b" style={{ borderColor: "var(--border)" }}>
-          {[
-            { id: "cards" as const, labelKey: "agents.cards", icon: LayoutGrid },
-            { id: "organigrama" as const, labelKey: "agents.organigrama", icon: GitBranch },
-          ].map(({ id, labelKey, icon: Icon }) => (
-            <button
-              key={id}
-              onClick={() => setActiveTab(id)}
-              className="flex items-center gap-2 px-4 py-2 font-medium transition-all"
-              style={{
-                color: activeTab === id ? "var(--accent)" : "var(--text-secondary)",
-                borderBottom: activeTab === id ? "2px solid var(--accent)" : "2px solid transparent",
-                borderTop: "none",
-                borderLeft: "none",
-                borderRight: "none",
-                background: "none",
-                cursor: "pointer",
-                paddingBottom: "0.5rem",
-              }}
-            >
-              <Icon className="w-4 h-4" />
-              {t(labelKey)}
-            </button>
-          ))}
+        {/* Notification Toast */}
+        {notification && (
+          <div
+            className="fixed top-4 right-4 z-[60] px-4 py-3 rounded-lg shadow-lg text-sm font-medium animate-in fade-in slide-in-from-top-2"
+            style={{
+              backgroundColor: notification.type === "success" ? "#059669" : "#dc2626",
+              color: "white",
+            }}
+          >
+            {notification.message}
+          </div>
+        )}
+
+        {/* Tabs + Create Button */}
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex gap-2 border-b" style={{ borderColor: "var(--border)" }}>
+            {[
+              { id: "cards" as const, labelKey: "agents.cards", icon: LayoutGrid },
+              { id: "organigrama" as const, labelKey: "agents.organigrama", icon: GitBranch },
+            ].map(({ id, labelKey, icon: Icon }) => (
+              <button
+                key={id}
+                onClick={() => setActiveTab(id)}
+                className="flex items-center gap-2 px-4 py-2 font-medium transition-all"
+                style={{
+                  color: activeTab === id ? "var(--accent)" : "var(--text-secondary)",
+                  borderBottom: activeTab === id ? "2px solid var(--accent)" : "2px solid transparent",
+                  borderTop: "none",
+                  borderLeft: "none",
+                  borderRight: "none",
+                  background: "none",
+                  cursor: "pointer",
+                  paddingBottom: "0.5rem",
+                }}
+              >
+                <Icon className="w-4 h-4" />
+                {t(labelKey)}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all hover:opacity-90"
+            style={{
+              backgroundColor: "var(--accent)",
+              color: "white",
+            }}
+          >
+            <Plus className="w-4 h-4" />
+            {t("agents.createAgent")}
+          </button>
         </div>
 
         {activeTab === "organigrama" && (
@@ -185,250 +281,350 @@ export default function AgentsPage() {
         )}
 
         {activeTab === "cards" && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {agents.map((agent) => {
-              const statusConfig = STATUS_CONFIG[agent.status];
-              const moodConfig = agent.mood ? MOOD_CONFIG[agent.mood.mood] : null;
-
-              return (
-                <div
-                  key={agent.id}
-                  className="rounded-xl overflow-hidden transition-all hover:scale-[1.01]"
-                  style={{
-                    backgroundColor: "var(--card)",
-                    border: `2px solid ${statusConfig.color}40`,
-                  }}
+          <>
+            {agents.length === 0 ? (
+              <div
+                className="flex flex-col items-center justify-center py-20 rounded-xl"
+                style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+              >
+                <Bot className="w-16 h-16 mb-4" style={{ color: "var(--text-muted)" }} />
+                <h3 className="text-lg font-semibold mb-2" style={{ color: "var(--text-primary)" }}>
+                  {t("agents.noAgents")}
+                </h3>
+                <p className="text-sm mb-6" style={{ color: "var(--text-muted)" }}>
+                  {t("agents.noAgentsDesc")}
+                </p>
+                <button
+                  onClick={() => setShowCreateModal(true)}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-sm transition-all hover:opacity-90"
+                  style={{ backgroundColor: "var(--accent)", color: "white" }}
                 >
-                  {/* Header */}
-                  <div
-                    className="px-5 py-4 flex items-center justify-between"
-                    style={{
-                      borderBottom: "1px solid var(--border)",
-                      background: `linear-gradient(135deg, ${agent.color}15, transparent)`,
-                    }}
-                  >
-                    <div className="flex items-center gap-3">
+                  <Plus className="w-4 h-4" />
+                  {t("agents.createAgent")}
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {agents.map((agent) => {
+                  const statusConfig = STATUS_CONFIG[agent.status];
+                  const moodConfig = agent.mood ? MOOD_CONFIG[agent.mood.mood] : null;
+
+                  return (
+                    <div
+                      key={agent.id}
+                      className="rounded-xl overflow-hidden transition-all hover:scale-[1.01] cursor-pointer group"
+                      style={{
+                        backgroundColor: "var(--card)",
+                        border: `2px solid ${statusConfig.color}40`,
+                      }}
+                      onClick={() => setInspectAgentId(agent.id)}
+                    >
+                      {/* Header */}
                       <div
-                        className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl relative"
+                        className="px-5 py-4 flex items-center justify-between"
                         style={{
-                          backgroundColor: `${agent.color}20`,
-                          border: `2px solid ${agent.color}`,
+                          borderBottom: "1px solid var(--border)",
+                          background: `linear-gradient(135deg, ${agent.color}15, transparent)`,
                         }}
                       >
-                        {agent.emoji}
-                        {/* Mood indicator overlay */}
-                        {agent.mood && (
+                        <div className="flex items-center gap-3">
                           <div
-                            className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center text-xs"
+                            className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl relative"
                             style={{
-                              backgroundColor: moodConfig?.color,
-                              border: "2px solid var(--card)",
+                              backgroundColor: `${agent.color}20`,
+                              border: `2px solid ${agent.color}`,
                             }}
-                            title={`${moodConfig?.label} - Energy: ${agent.mood.energyLevel}%`}
                           >
-                            {agent.mood.emoji}
+                            {agent.emoji}
+                            {/* Mood indicator overlay */}
+                            {agent.mood && (
+                              <div
+                                className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center text-xs"
+                                style={{
+                                  backgroundColor: moodConfig?.color,
+                                  border: "2px solid var(--card)",
+                                }}
+                                title={`${moodConfig?.label} - Energy: ${agent.mood.energyLevel}%`}
+                              >
+                                {agent.mood.emoji}
+                              </div>
+                            )}
+                          </div>
+                          <div>
+                            <h3
+                              className="text-lg font-bold"
+                              style={{
+                                fontFamily: "var(--font-heading)",
+                                color: "var(--text-primary)",
+                              }}
+                            >
+                              {agent.name}
+                            </h3>
+                            <div className="flex items-center gap-2 mt-1">
+                              <Circle
+                                className="w-2 h-2"
+                                style={{
+                                  fill: statusConfig.color,
+                                  color: statusConfig.color,
+                                }}
+                              />
+                              <span
+                                className="text-xs font-medium px-2 py-0.5 rounded"
+                                style={{
+                                  color: statusConfig.color,
+                                  backgroundColor: statusConfig.bgColor,
+                                }}
+                              >
+                                {t(`agents.status.${agent.status}`)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {agent.botToken && (
+                            <div title={t("agents.telegramConnected")}>
+                              <MessageSquare
+                                className="w-5 h-5"
+                                style={{ color: "#0088cc" }}
+                              />
+                            </div>
+                          )}
+                          {agent.activeSessions > 0 && (
+                            <span
+                              className="text-xs font-bold px-2 py-1 rounded-full"
+                              style={{
+                                backgroundColor: "var(--accent)",
+                                color: "white",
+                              }}
+                            >
+                              {agent.activeSessions} {t("agents.active")}
+                            </span>
+                          )}
+                          {/* Delete button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteConfirm(agent);
+                            }}
+                            className="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/10"
+                            title={t("agents.deleteAgent")}
+                          >
+                            <Trash2 className="w-4 h-4" style={{ color: "#ef4444" }} />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Stats Grid */}
+                      <div className="grid grid-cols-3 gap-px bg-[var(--border)]">
+                        <div
+                          className="p-3 text-center"
+                          style={{ backgroundColor: "var(--card)" }}
+                        >
+                          <div className="flex items-center justify-center gap-1 mb-1">
+                            <Zap className="w-3 h-3" style={{ color: agent.color }} />
+                            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                              {t("agents.tokens")}
+                            </span>
+                          </div>
+                          <div className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
+                            {formatTokens(agent.tokensUsed)}
+                          </div>
+                        </div>
+                        <div
+                          className="p-3 text-center"
+                          style={{ backgroundColor: "var(--card)" }}
+                        >
+                          <div className="flex items-center justify-center gap-1 mb-1">
+                            <TrendingUp className="w-3 h-3" style={{ color: agent.color }} />
+                            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                              {t("agents.sessions")}
+                            </span>
+                          </div>
+                          <div className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
+                            {agent.sessionCount}
+                          </div>
+                        </div>
+                        <div
+                          className="p-3 text-center"
+                          style={{ backgroundColor: "var(--card)" }}
+                        >
+                          <div className="flex items-center justify-center gap-1 mb-1">
+                            <Activity className="w-3 h-3" style={{ color: agent.color }} />
+                            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                              {t("agents.energy")}
+                            </span>
+                          </div>
+                          <div className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
+                            {agent.mood ? `${agent.mood.energyLevel}%` : "-"}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Current Task (if working) */}
+                      {agent.status === "working" && agent.currentTask && (
+                        <div
+                          className="px-5 py-3"
+                          style={{ backgroundColor: "var(--card-elevated)", borderBottom: "1px solid var(--border)" }}
+                        >
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                            <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
+                              {t("agents.currentTask")}:
+                            </span>
+                            <span className="text-xs truncate" style={{ color: "var(--text-primary)" }}>
+                              {agent.currentTask}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Details */}
+                      <div className="p-4 space-y-3">
+                        {/* Model */}
+                        <div className="flex items-center gap-3">
+                          <Bot className="w-4 h-4 shrink-0" style={{ color: agent.color }} />
+                          <div className="flex-1 min-w-0">
+                            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                              {t("agents.model")}:
+                            </span>
+                            <span className="text-xs font-mono ml-2" style={{ color: "var(--text-primary)" }}>
+                              {agent.model.split("/").pop() || agent.model}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Workspace */}
+                        {agent.workspace && (
+                          <div className="flex items-center gap-3">
+                            <HardDrive className="w-4 h-4 shrink-0" style={{ color: agent.color }} />
+                            <div className="flex-1 min-w-0">
+                              <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                                {t("agents.workspace")}:
+                              </span>
+                              <span
+                                className="text-xs font-mono ml-2 truncate"
+                                style={{ color: "var(--text-primary)" }}
+                                title={agent.workspace}
+                              >
+                                {formatWorkspace(agent.workspace)}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* DM Policy */}
+                        {agent.dmPolicy && (
+                          <div className="flex items-center gap-3">
+                            <Shield className="w-4 h-4 shrink-0" style={{ color: agent.color }} />
+                            <div className="flex-1 min-w-0">
+                              <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                                {t("agents.dmPolicy")}:
+                              </span>
+                              <span className="text-xs font-medium ml-2" style={{ color: "var(--text-primary)" }}>
+                                {agent.dmPolicy}
+                              </span>
+                            </div>
                           </div>
                         )}
                       </div>
-                      <div>
-                        <h3
-                          className="text-lg font-bold"
-                          style={{
-                            fontFamily: "var(--font-heading)",
-                            color: "var(--text-primary)",
-                          }}
-                        >
-                          {agent.name}
-                        </h3>
-                        <div className="flex items-center gap-2 mt-1">
-                          <Circle
-                            className="w-2 h-2"
-                            style={{
-                              fill: statusConfig.color,
-                              color: statusConfig.color,
-                            }}
-                          />
-                          <span
-                            className="text-xs font-medium px-2 py-0.5 rounded"
-                            style={{
-                              color: statusConfig.color,
-                              backgroundColor: statusConfig.bgColor,
-                            }}
-                          >
-                            {t(`agents.status.${agent.status}`)}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
 
-                    <div className="flex items-center gap-2">
-                      {agent.botToken && (
-                        <div title={t("agents.telegramConnected")}>
-                          <MessageSquare
-                            className="w-5 h-5"
-                            style={{ color: "#0088cc" }}
-                          />
-                        </div>
-                      )}
-                      {agent.activeSessions > 0 && (
-                        <span
-                          className="text-xs font-bold px-2 py-1 rounded-full"
-                          style={{
-                            backgroundColor: "var(--accent)",
-                            color: "white",
-                          }}
-                        >
-                          {agent.activeSessions} {t("agents.active")}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Stats Grid */}
-                  <div className="grid grid-cols-3 gap-px bg-[var(--border)]">
-                    <div
-                      className="p-3 text-center"
-                      style={{ backgroundColor: "var(--card)" }}
-                    >
-                      <div className="flex items-center justify-center gap-1 mb-1">
-                        <Zap className="w-3 h-3" style={{ color: agent.color }} />
-                        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                          {t("agents.tokens")}
-                        </span>
-                      </div>
-                      <div className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
-                        {formatTokens(agent.tokensUsed)}
-                      </div>
-                    </div>
-                    <div
-                      className="p-3 text-center"
-                      style={{ backgroundColor: "var(--card)" }}
-                    >
-                      <div className="flex items-center justify-center gap-1 mb-1">
-                        <TrendingUp className="w-3 h-3" style={{ color: agent.color }} />
-                        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                          {t("agents.sessions")}
-                        </span>
-                      </div>
-                      <div className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
-                        {agent.sessionCount}
-                      </div>
-                    </div>
-                    <div
-                      className="p-3 text-center"
-                      style={{ backgroundColor: "var(--card)" }}
-                    >
-                      <div className="flex items-center justify-center gap-1 mb-1">
-                        <Activity className="w-3 h-3" style={{ color: agent.color }} />
-                        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                          {t("agents.energy")}
-                        </span>
-                      </div>
-                      <div className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>
-                        {agent.mood ? `${agent.mood.energyLevel}%` : "-"}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Current Task (if working) */}
-                  {agent.status === "working" && agent.currentTask && (
-                    <div
-                      className="px-5 py-3"
-                      style={{ backgroundColor: "var(--card-elevated)", borderBottom: "1px solid var(--border)" }}
-                    >
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                        <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
-                          {t("agents.currentTask")}:
-                        </span>
-                        <span className="text-xs truncate" style={{ color: "var(--text-primary)" }}>
-                          {agent.currentTask}
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Details */}
-                  <div className="p-4 space-y-3">
-                    {/* Model */}
-                    <div className="flex items-center gap-3">
-                      <Bot className="w-4 h-4 shrink-0" style={{ color: agent.color }} />
-                      <div className="flex-1 min-w-0">
-                        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                          {t("agents.model")}:
-                        </span>
-                        <span className="text-xs font-mono ml-2" style={{ color: "var(--text-primary)" }}>
-                          {agent.model.split("/").pop() || agent.model}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Workspace */}
-                    {agent.workspace && (
-                      <div className="flex items-center gap-3">
-                        <HardDrive className="w-4 h-4 shrink-0" style={{ color: agent.color }} />
-                        <div className="flex-1 min-w-0">
+                      {/* Footer - Last Activity */}
+                      <div
+                        className="px-5 py-3 flex items-center justify-between"
+                        style={{ borderTop: "1px solid var(--border)" }}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Clock className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
                           <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                            {t("agents.workspace")}:
-                          </span>
-                          <span
-                            className="text-xs font-mono ml-2 truncate"
-                            style={{ color: "var(--text-primary)" }}
-                            title={agent.workspace}
-                          >
-                            {formatWorkspace(agent.workspace)}
+                            {t("agents.lastActivity")}: {formatLastActivity(agent.lastActivity)}
                           </span>
                         </div>
+                        {agent.mood && agent.mood.streak > 0 && (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                              {t("agents.streak")}:
+                            </span>
+                            <span
+                              className="text-xs font-bold px-1.5 py-0.5 rounded"
+                              style={{
+                                backgroundColor: moodConfig?.color + "20",
+                                color: moodConfig?.color,
+                              }}
+                            >
+                              {agent.mood.streak}
+                            </span>
+                          </div>
+                        )}
                       </div>
-                    )}
-
-                    {/* DM Policy */}
-                    {agent.dmPolicy && (
-                      <div className="flex items-center gap-3">
-                        <Shield className="w-4 h-4 shrink-0" style={{ color: agent.color }} />
-                        <div className="flex-1 min-w-0">
-                          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                            {t("agents.dmPolicy")}:
-                          </span>
-                          <span className="text-xs font-medium ml-2" style={{ color: "var(--text-primary)" }}>
-                            {agent.dmPolicy}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Footer - Last Activity */}
-                  <div
-                    className="px-5 py-3 flex items-center justify-between"
-                    style={{ borderTop: "1px solid var(--border)" }}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Clock className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
-                      <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                        {t("agents.lastActivity")}: {formatLastActivity(agent.lastActivity)}
-                      </span>
                     </div>
-                    {agent.mood && agent.mood.streak > 0 && (
-                      <div className="flex items-center gap-1">
-                        <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                          {t("agents.streak")}:
-                        </span>
-                        <span
-                          className="text-xs font-bold px-1.5 py-0.5 rounded"
-                          style={{
-                            backgroundColor: moodConfig?.color + "20",
-                            color: moodConfig?.color,
-                          }}
-                        >
-                          🔥 {agent.mood.streak}
-                        </span>
-                      </div>
-                    )}
-                  </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Create Agent Modal */}
+        <AgentCreateModal
+          isOpen={showCreateModal}
+          onClose={() => setShowCreateModal(false)}
+          onCreate={handleCreateAgent}
+        />
+
+        {/* Inspect/Edit Agent Panel */}
+        {inspectAgentId && (
+          <AgentInspectPanel
+            agentId={inspectAgentId}
+            isOpen={!!inspectAgentId}
+            onClose={() => setInspectAgentId(null)}
+            onAction={handleInspectAction}
+          />
+        )}
+
+        {/* Delete Confirmation Modal */}
+        {deleteConfirm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div
+              className="w-full max-w-md rounded-xl shadow-2xl overflow-hidden p-6"
+              style={{ backgroundColor: "var(--card)" }}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div
+                  className="w-10 h-10 rounded-lg flex items-center justify-center"
+                  style={{ backgroundColor: "#ef444420" }}
+                >
+                  <Trash2 className="w-5 h-5" style={{ color: "#ef4444" }} />
                 </div>
-              );
-            })}
+                <h3 className="text-lg font-semibold" style={{ color: "var(--text-primary)" }}>
+                  {t("agents.deleteAgent")}
+                </h3>
+              </div>
+
+              <p className="text-sm mb-6" style={{ color: "var(--text-secondary)" }}>
+                {t("agents.deleteConfirm").replace("{name}", deleteConfirm.name)}
+              </p>
+
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  className="px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                  style={{
+                    backgroundColor: "var(--card-elevated)",
+                    color: "var(--text-primary)",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleDeleteAgent(deleteConfirm)}
+                  className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors hover:opacity-90"
+                  style={{ backgroundColor: "#ef4444" }}
+                >
+                  {t("agents.deleteAgent")}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
