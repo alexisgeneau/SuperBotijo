@@ -13,6 +13,7 @@ import {
   Power,
   Download,
   Cloud,
+  Plus,
 } from "lucide-react";
 import { SectionHeader, MetricCard } from "@/components/SuperBotijo";
 import { ClawHubBrowser } from "@/components/ClawHubBrowser";
@@ -43,6 +44,8 @@ export default function SkillsPage() {
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   const [togglingSkill, setTogglingSkill] = useState<string | null>(null);
   const [showClawHub, setShowClawHub] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [notification, setNotification] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [updates, setUpdates] = useState<Array<{
     slug: string;
     currentVersion: string;
@@ -85,6 +88,48 @@ export default function SkillsPage() {
       })
       .catch(() => {});
     setShowClawHub(false);
+  };
+
+  const refreshSkills = () => {
+    fetch("/api/skills")
+      .then((res) => res.json())
+      .then(setData)
+      .catch(() => {});
+  };
+
+  const showNotif = (message: string, type: "success" | "error") => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 3000);
+  };
+
+  const handleCreateSkill = async (skillData: {
+    id: string;
+    name: string;
+    description: string;
+    emoji: string;
+    homepage: string;
+    content: string;
+  }) => {
+    try {
+      const res = await fetch("/api/skills/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(skillData),
+      });
+
+      const result = await res.json();
+
+      if (!res.ok) {
+        showNotif(result.error || "Failed to create skill", "error");
+        return;
+      }
+
+      showNotif(`Skill "${skillData.name}" created`, "success");
+      setShowCreateModal(false);
+      refreshSkills();
+    } catch (error) {
+      showNotif("Failed to create skill", "error");
+    }
   };
 
   const handleToggleSkill = async (skillId: string, currentlyEnabled: boolean) => {
@@ -188,11 +233,23 @@ export default function SkillsPage() {
         {/* Action buttons */}
         <div className="flex gap-2 mt-4">
           <button
-            onClick={() => setShowClawHub(true)}
+            onClick={() => setShowCreateModal(true)}
             className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all"
             style={{
               backgroundColor: "var(--accent)",
               color: "white",
+            }}
+          >
+            <Plus className="w-4 h-4" />
+            Create Skill
+          </button>
+          <button
+            onClick={() => setShowClawHub(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all"
+            style={{
+              backgroundColor: "var(--surface-elevated)",
+              color: "var(--text-primary)",
+              border: "1px solid var(--border)",
             }}
           >
             <Cloud className="w-4 h-4" />
@@ -436,6 +493,27 @@ export default function SkillsPage() {
         />
       )}
 
+      {/* Notification Toast */}
+      {notification && (
+        <div
+          className="fixed top-4 right-4 z-[110] px-4 py-3 rounded-lg shadow-lg text-sm font-medium"
+          style={{
+            backgroundColor: notification.type === "success" ? "#059669" : "#dc2626",
+            color: "white",
+          }}
+        >
+          {notification.message}
+        </div>
+      )}
+
+      {/* Create Skill Modal */}
+      {showCreateModal && (
+        <SkillCreateModal
+          onClose={() => setShowCreateModal(false)}
+          onCreate={handleCreateSkill}
+        />
+      )}
+
       {/* ClawHub Browser Modal */}
       {showClawHub && (
         <div
@@ -637,6 +715,296 @@ function SkillCard({
                 transition: "left 200ms",
               }}
             />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Skill Create Modal Component
+function SkillCreateModal({
+  onClose,
+  onCreate,
+}: {
+  onClose: () => void;
+  onCreate: (data: {
+    id: string;
+    name: string;
+    description: string;
+    emoji: string;
+    homepage: string;
+    content: string;
+  }) => void;
+}) {
+  const [name, setName] = useState("");
+  const [id, setId] = useState("");
+  const [description, setDescription] = useState("");
+  const [emoji, setEmoji] = useState("");
+  const [homepage, setHomepage] = useState("");
+  const [content, setContent] = useState("");
+  const [idManuallyEdited, setIdManuallyEdited] = useState(false);
+
+  // Auto-generate ID from name
+  const handleNameChange = (value: string) => {
+    setName(value);
+    if (!idManuallyEdited) {
+      setId(
+        value
+          .toLowerCase()
+          .replace(/[^a-z0-9\s-]/g, "")
+          .replace(/\s+/g, "-")
+          .replace(/-+/g, "-")
+          .replace(/^-|-$/g, "")
+      );
+    }
+  };
+
+  const handleSubmit = () => {
+    if (!name.trim()) return;
+    onCreate({
+      id: id || name.toLowerCase().replace(/\s+/g, "-"),
+      name: name.trim(),
+      description: description.trim(),
+      emoji: emoji.trim(),
+      homepage: homepage.trim(),
+      content: content.trim(),
+    });
+  };
+
+  const inputStyle = {
+    width: "100%",
+    padding: "10px 14px",
+    borderRadius: "6px",
+    backgroundColor: "var(--surface-elevated)",
+    border: "1px solid var(--border)",
+    color: "var(--text-primary)",
+    fontFamily: "var(--font-body)",
+    fontSize: "13px",
+  };
+
+  const labelStyle = {
+    display: "block",
+    fontFamily: "var(--font-body)",
+    fontSize: "12px",
+    fontWeight: 600 as const,
+    color: "var(--text-secondary)",
+    marginBottom: "6px",
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        backgroundColor: "rgba(0, 0, 0, 0.8)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "24px",
+        zIndex: 100,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          backgroundColor: "var(--surface)",
+          borderRadius: "12px",
+          maxWidth: "600px",
+          width: "100%",
+          maxHeight: "90vh",
+          overflow: "auto",
+          border: "1px solid var(--border)",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div
+          style={{
+            padding: "24px",
+            borderBottom: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div
+              style={{
+                width: "40px",
+                height: "40px",
+                borderRadius: "8px",
+                backgroundColor: "var(--accent-soft)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Plus style={{ width: "20px", height: "20px", color: "var(--accent)" }} />
+            </div>
+            <div>
+              <h2
+                style={{
+                  fontFamily: "var(--font-heading)",
+                  fontSize: "18px",
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                }}
+              >
+                Create Skill
+              </h2>
+              <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                Add a new custom skill to your workspace
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              padding: "8px",
+              borderRadius: "6px",
+              backgroundColor: "transparent",
+              border: "none",
+              cursor: "pointer",
+              color: "var(--text-muted)",
+            }}
+          >
+            <X style={{ width: "20px", height: "20px" }} />
+          </button>
+        </div>
+
+        {/* Form */}
+        <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "16px" }}>
+          {/* Name + Emoji row */}
+          <div style={{ display: "flex", gap: "12px" }}>
+            <div style={{ flex: 1 }}>
+              <label style={labelStyle}>Name *</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => handleNameChange(e.target.value)}
+                placeholder="My Custom Skill"
+                style={inputStyle}
+              />
+            </div>
+            <div style={{ width: "80px" }}>
+              <label style={labelStyle}>Emoji</label>
+              <input
+                type="text"
+                value={emoji}
+                onChange={(e) => setEmoji(e.target.value)}
+                placeholder="🔧"
+                maxLength={4}
+                style={{ ...inputStyle, textAlign: "center" as const, fontSize: "18px" }}
+              />
+            </div>
+          </div>
+
+          {/* ID */}
+          <div>
+            <label style={labelStyle}>Skill ID</label>
+            <input
+              type="text"
+              value={id}
+              onChange={(e) => {
+                setId(e.target.value);
+                setIdManuallyEdited(true);
+              }}
+              placeholder="my-custom-skill"
+              style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: "12px" }}
+            />
+            <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
+              Folder name in workspace/skills/. Auto-generated from name.
+            </p>
+          </div>
+
+          {/* Description */}
+          <div>
+            <label style={labelStyle}>Description</label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What does this skill do?"
+              style={inputStyle}
+            />
+          </div>
+
+          {/* Homepage */}
+          <div>
+            <label style={labelStyle}>Homepage (optional)</label>
+            <input
+              type="text"
+              value={homepage}
+              onChange={(e) => setHomepage(e.target.value)}
+              placeholder="https://..."
+              style={inputStyle}
+            />
+          </div>
+
+          {/* Content */}
+          <div>
+            <label style={labelStyle}>Skill Content (SKILL.md body)</label>
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder={"# My Skill\n\nDescribe the skill instructions, tools, and capabilities here...\n\n## Usage\n\n..."}
+              rows={8}
+              style={{
+                ...inputStyle,
+                fontFamily: "var(--font-mono)",
+                fontSize: "12px",
+                resize: "vertical" as const,
+                lineHeight: "1.6",
+              }}
+            />
+            <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
+              Markdown content for the SKILL.md file. This defines the skill&apos;s behavior.
+            </p>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div
+          style={{
+            padding: "16px 24px",
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: "12px",
+          }}
+        >
+          <button
+            onClick={onClose}
+            style={{
+              padding: "10px 20px",
+              borderRadius: "6px",
+              backgroundColor: "var(--surface-elevated)",
+              color: "var(--text-primary)",
+              border: "1px solid var(--border)",
+              cursor: "pointer",
+              fontSize: "13px",
+              fontWeight: 600,
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={!name.trim()}
+            style={{
+              padding: "10px 20px",
+              borderRadius: "6px",
+              backgroundColor: !name.trim() ? "var(--text-muted)" : "var(--accent)",
+              color: "white",
+              border: "none",
+              cursor: !name.trim() ? "not-allowed" : "pointer",
+              fontSize: "13px",
+              fontWeight: 600,
+              opacity: !name.trim() ? 0.5 : 1,
+            }}
+          >
+            Create Skill
           </button>
         </div>
       </div>
