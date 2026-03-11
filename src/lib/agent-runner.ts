@@ -3,7 +3,7 @@
  * Manages agent lifecycle: polls for assigned tasks, executes via OpenClaw CLI.
  * Delegates all LLM work to OpenClaw's existing model connections and sessions.
  */
-import { execSync } from "child_process";
+import { execSync, exec } from "child_process";
 import { getAgentById } from "@/operations/agent-ops";
 import { listTasks, updateTask, claimTask, releaseTask } from "@/lib/kanban-db";
 import { resolveDependencies } from "@/lib/dependency-resolver";
@@ -44,27 +44,24 @@ const activeRunners = new Map<string, {
 }>();
 
 // ---------------------------------------------------------------------------
-// Core: execute a single task via OpenClaw CLI
+// Core: create a one-shot cron job and force-run it
 // ---------------------------------------------------------------------------
 
-function executeTaskViaCron(
-  agentId: string,
-  taskId: string,
+function createCronJob(
   taskTitle: string,
   taskDescription: string | null,
   model?: string,
-): { success: boolean; result: string; cronJobId?: string } {
+): { success: boolean; jobId?: string; error?: string } {
   const prompt = [
-    `You are executing Kanban task "${taskTitle}" (ID: ${taskId}).`,
-    taskDescription ? `\nDescription:\n${taskDescription}` : "",
-    `\nComplete this task. When done, summarize what you accomplished.`,
+    `## Task: ${taskTitle}`,
+    taskDescription ? `\n${taskDescription}` : "",
+    `\nComplete this task. Be concise and actionable. Summarize what you accomplished.`,
   ].join("");
 
   // Escape single quotes for shell
   const safePrompt = prompt.replace(/'/g, "'\\''");
   const safeName = `Task: ${taskTitle.slice(0, 50)}`.replace(/'/g, "'\\''");
 
-  // Build openclaw cron command for one-shot isolated execution
   const parts = [
     "openclaw cron add",
     `--name '${safeName}'`,
@@ -78,28 +75,89 @@ function executeTaskViaCron(
     parts.push(`--model '${model}'`);
   }
 
-  const cmd = parts.join(" ");
-
   try {
-    const output = execSync(cmd, {
+    const output = execSync(parts.join(" "), {
       encoding: "utf-8",
-      timeout: 30_000,
-      env: { ...process.env },
+      timeout: 15_000,
     });
 
-    // Try to extract the cron job ID from output
-    const idMatch = output.match(/(?:id|ID|job)[:\s]+([a-zA-Z0-9_-]+)/);
-    const cronJobId = idMatch?.[1];
+    // Extract job ID from output (UUID format or alphanumeric)
+    const idMatch = output.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)
+      || output.match(/(?:id|ID|job)[:\s]+([a-zA-Z0-9_-]+)/);
+    const jobId = idMatch?.[1];
 
-    return {
-      success: true,
-      result: `Task dispatched to OpenClaw session. ${cronJobId ? `Cron job: ${cronJobId}` : ""}`.trim(),
-      cronJobId: cronJobId || undefined,
-    };
+    if (!jobId) {
+      return { success: false, error: `Could not extract job ID from: ${output.trim()}` };
+    }
+
+    return { success: true, jobId };
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Failed to dispatch task via OpenClaw";
-    return { success: false, result: msg };
+    const msg = err instanceof Error ? err.message : "Failed to create cron job";
+    return { success: false, error: msg };
   }
+}
+
+/**
+ * Force-run a cron job and poll for its completion.
+ * Returns a promise that resolves when the run finishes.
+ */
+function forceRunAndWait(
+  jobId: string,
+  timeoutMs = 300_000, // 5 min max
+  pollMs = 5_000,
+): Promise<{ success: boolean; result: string }> {
+  return new Promise((resolve) => {
+    // Force-run the job (async, don't block)
+    exec(`openclaw cron run ${jobId} --force 2>&1`, { timeout: 15_000 }, (err) => {
+      if (err) {
+        console.warn(`[agent-runner] Force-run command returned error (may still work): ${err.message}`);
+      }
+    });
+
+    const startTime = Date.now();
+
+    // Poll for completion
+    const pollTimer = setInterval(() => {
+      // Timeout check
+      if (Date.now() - startTime > timeoutMs) {
+        clearInterval(pollTimer);
+        resolve({ success: false, result: "Task execution timed out" });
+        return;
+      }
+
+      try {
+        const output = execSync(`openclaw cron runs ${jobId} --json 2>/dev/null`, {
+          encoding: "utf-8",
+          timeout: 10_000,
+        });
+
+        const data = JSON.parse(output);
+        const runs = data.runs || data || [];
+
+        if (runs.length === 0) return; // Not started yet
+
+        // Get the most recent run
+        const latestRun = runs[0];
+
+        if (latestRun.status === "success") {
+          clearInterval(pollTimer);
+          resolve({
+            success: true,
+            result: latestRun.summary || latestRun.result || latestRun.output || "Task completed successfully",
+          });
+        } else if (latestRun.status === "error" || latestRun.status === "failed") {
+          clearInterval(pollTimer);
+          resolve({
+            success: false,
+            result: latestRun.error || latestRun.result || "Task execution failed",
+          });
+        }
+        // else still running — keep polling
+      } catch {
+        // Parse error or command failure — keep polling
+      }
+    }, pollMs);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -146,18 +204,29 @@ async function pollCycle(agentId: string): Promise<void> {
     runner.state.currentTaskId = task.id;
     updateTask(task.id, { executionStatus: "running" });
 
-    console.log(`[agent-runner] Agent "${agentId}" dispatching task "${task.title}" (${task.id})`);
+    console.log(`[agent-runner] Agent "${agentId}" executing task "${task.title}" (${task.id})`);
 
-    // 5. Execute via OpenClaw CLI (one-shot isolated cron session)
-    const result = executeTaskViaCron(
-      agentId,
-      task.id,
-      task.title,
-      task.description,
-      runner.config.model,
-    );
+    // 5. Create one-shot cron job
+    const cronResult = createCronJob(task.title, task.description, runner.config.model);
 
-    // 6. Update task with result
+    if (!cronResult.success || !cronResult.jobId) {
+      updateTask(task.id, {
+        executionStatus: "error",
+        executionResult: cronResult.error || "Failed to create OpenClaw session",
+      });
+      runner.state.tasksFailed++;
+      releaseTask(task.id, agentId);
+      runner.state.currentTaskId = null;
+      runner.state.status = "idle";
+      return;
+    }
+
+    console.log(`[agent-runner] Created cron job ${cronResult.jobId} for task "${task.title}"`);
+
+    // 6. Force-run and wait for actual completion
+    const result = await forceRunAndWait(cronResult.jobId);
+
+    // 7. Update task with actual result
     if (result.success) {
       updateTask(task.id, {
         executionStatus: "success",
@@ -165,7 +234,7 @@ async function pollCycle(agentId: string): Promise<void> {
         status: "done",
       });
       runner.state.tasksCompleted++;
-      console.log(`[agent-runner] Agent "${agentId}" dispatched task "${task.title}"`);
+      console.log(`[agent-runner] Agent "${agentId}" completed task "${task.title}"`);
     } else {
       updateTask(task.id, {
         executionStatus: "error",
@@ -175,7 +244,7 @@ async function pollCycle(agentId: string): Promise<void> {
       console.log(`[agent-runner] Agent "${agentId}" failed task "${task.title}": ${result.result}`);
     }
 
-    // 7. Release claim
+    // 8. Release claim
     releaseTask(task.id, agentId);
     runner.state.currentTaskId = null;
     runner.state.status = "idle";
