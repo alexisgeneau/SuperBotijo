@@ -390,6 +390,46 @@ export function TaskModal({ isOpen, onClose, onSave, onDelete, columns, editingT
             )}
           </div>
 
+          {/* Execution Result (read-only, shown when editing a task that has one) */}
+          {editingTask?.executionStatus && (
+            <div>
+              <label className="block text-sm font-medium mb-2" style={{ color: "var(--text-secondary)" }}>
+                Execution
+              </label>
+              <div
+                className="rounded-lg border px-4 py-3 text-sm"
+                style={{
+                  backgroundColor: "var(--card-elevated)",
+                  borderColor: editingTask.executionStatus === "success" ? "var(--success)" :
+                               editingTask.executionStatus === "error" ? "var(--error)" :
+                               editingTask.executionStatus === "running" ? "var(--info)" : "var(--border)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span
+                    className="text-xs font-semibold uppercase"
+                    style={{
+                      color: editingTask.executionStatus === "success" ? "var(--success)" :
+                             editingTask.executionStatus === "error" ? "var(--error)" :
+                             editingTask.executionStatus === "running" ? "var(--info)" : "var(--text-muted)",
+                    }}
+                  >
+                    {editingTask.executionStatus}
+                  </span>
+                </div>
+                {editingTask.executionResult && (
+                  <pre
+                    className="text-xs whitespace-pre-wrap break-words mt-1"
+                    style={{ color: "var(--text-primary)", fontFamily: "var(--font-mono, monospace)" }}
+                  >
+                    {editingTask.executionResult}
+                  </pre>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Actions */}
           <div className="flex items-center justify-between pt-4" style={{ borderTop: "1px solid var(--border)" }}>
             {editingTask && (
