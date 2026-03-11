@@ -16,6 +16,8 @@ import {
   Clock,
   Plus,
   Trash2,
+  Play,
+  Square,
 } from "lucide-react";
 import { AgentOrganigrama } from "@/components/AgentOrganigrama";
 import { AgentCreateModal } from "@/components/AgentCreateModal";
@@ -99,7 +101,20 @@ export default function AgentsPage() {
   const [inspectAgentId, setInspectAgentId] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Agent | null>(null);
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [runningAgents, setRunningAgents] = useState<Set<string>>(new Set());
+  const [togglingAgents, setTogglingAgents] = useState<Set<string>>(new Set());
   const { t } = useI18n();
+
+  const fetchRunningAgents = useCallback(async () => {
+    try {
+      const res = await fetch("/api/agents/running");
+      const data = await res.json();
+      const ids = new Set<string>((data.agents || []).map((a: { agentId: string }) => a.agentId));
+      setRunningAgents(ids);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const fetchAgents = useCallback(async () => {
     try {
@@ -115,9 +130,13 @@ export default function AgentsPage() {
 
   useEffect(() => {
     fetchAgents();
-    const interval = setInterval(fetchAgents, 10000);
+    fetchRunningAgents();
+    const interval = setInterval(() => {
+      fetchAgents();
+      fetchRunningAgents();
+    }, 10000);
     return () => clearInterval(interval);
-  }, [fetchAgents]);
+  }, [fetchAgents, fetchRunningAgents]);
 
   const showNotification = (message: string, type: "success" | "error") => {
     setNotification({ message, type });
@@ -170,6 +189,50 @@ export default function AgentsPage() {
         error instanceof Error ? error.message : t("agents.deleteFailed"),
         "error"
       );
+    }
+  };
+
+  const handleStartAgent = async (agentId: string) => {
+    setTogglingAgents(prev => new Set(prev).add(agentId));
+    try {
+      const res = await fetch(`/api/agents/${agentId}/run`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        showNotification(data.error || "Failed to start agent", "error");
+      } else {
+        showNotification(`Agent started`, "success");
+        await fetchRunningAgents();
+      }
+    } catch {
+      showNotification("Failed to start agent", "error");
+    } finally {
+      setTogglingAgents(prev => {
+        const next = new Set(prev);
+        next.delete(agentId);
+        return next;
+      });
+    }
+  };
+
+  const handleStopAgent = async (agentId: string) => {
+    setTogglingAgents(prev => new Set(prev).add(agentId));
+    try {
+      const res = await fetch(`/api/agents/${agentId}/run`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) {
+        showNotification(data.error || "Failed to stop agent", "error");
+      } else {
+        showNotification(`Agent stopped`, "success");
+        await fetchRunningAgents();
+      }
+    } catch {
+      showNotification("Failed to stop agent", "error");
+    } finally {
+      setTogglingAgents(prev => {
+        const next = new Set(prev);
+        next.delete(agentId);
+        return next;
+      });
     }
   };
 
@@ -377,6 +440,15 @@ export default function AgentsPage() {
                               >
                                 {t(`agents.status.${agent.status}`)}
                               </span>
+                              {runningAgents.has(agent.id) && (
+                                <span
+                                  className="text-xs font-medium px-2 py-0.5 rounded flex items-center gap-1"
+                                  style={{ color: "#22c55e", backgroundColor: "#22c55e20" }}
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                                  Running
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -400,6 +472,36 @@ export default function AgentsPage() {
                             >
                               {agent.activeSessions} {t("agents.active")}
                             </span>
+                          )}
+                          {/* Start/Stop button */}
+                          {agent.id !== "superbotijo" && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (runningAgents.has(agent.id)) {
+                                  handleStopAgent(agent.id);
+                                } else {
+                                  handleStartAgent(agent.id);
+                                }
+                              }}
+                              disabled={togglingAgents.has(agent.id)}
+                              className="p-1.5 rounded-lg transition-all hover:scale-105 disabled:opacity-50"
+                              style={{
+                                backgroundColor: runningAgents.has(agent.id) ? "#ef444420" : "#22c55e20",
+                              }}
+                              title={runningAgents.has(agent.id) ? "Stop agent" : "Start agent"}
+                            >
+                              {togglingAgents.has(agent.id) ? (
+                                <svg className="w-4 h-4 animate-spin" style={{ color: "var(--text-muted)" }} fill="none" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                              ) : runningAgents.has(agent.id) ? (
+                                <Square className="w-4 h-4" style={{ color: "#ef4444" }} />
+                              ) : (
+                                <Play className="w-4 h-4" style={{ color: "#22c55e" }} />
+                              )}
+                            </button>
                           )}
                           {/* Delete button */}
                           <button

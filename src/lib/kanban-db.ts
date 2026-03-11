@@ -94,6 +94,8 @@ export interface UpdateTaskInput {
   domain?: string | null;  // Update task's domain
   claimedBy?: string | null;  // For claim/unclaim
   claimedAt?: string | null;  // Timestamp when claimed
+  executionStatus?: KanbanTask["executionStatus"];
+  executionResult?: string | null;
 }
 
 export interface CreateColumnInput {
@@ -504,6 +506,16 @@ export function updateTask(id: string, updates: UpdateTaskInput): KanbanTask | n
   if (updates.claimedAt !== undefined) {
     fields.push("claimed_at = ?");
     values.push(updates.claimedAt);
+  }
+
+  if (updates.executionStatus !== undefined) {
+    fields.push("execution_status = ?");
+    values.push(updates.executionStatus);
+  }
+
+  if (updates.executionResult !== undefined) {
+    fields.push("execution_result = ?");
+    values.push(updates.executionResult);
   }
 
   if (fields.length === 0) return existing;
