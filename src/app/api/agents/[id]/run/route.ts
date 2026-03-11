@@ -35,10 +35,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     const result = await startAgent(id, {
       model: body.model as string | undefined,
-      systemPrompt: body.systemPrompt as string | undefined,
-      temperature: body.temperature as number | undefined,
-      maxTokens: body.maxTokens as number | undefined,
-      skills: body.skills as string[] | undefined,
       pollIntervalMs: body.pollIntervalMs as number | undefined,
     });
 

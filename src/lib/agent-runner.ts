@@ -1,11 +1,11 @@
 /**
  * Agent Runner Engine
- * Manages agent lifecycle: polls for assigned tasks, executes via LLM, updates status.
- * Uses OpenRouter (OpenAI-compatible API) for LLM calls.
+ * Manages agent lifecycle: polls for assigned tasks, executes via OpenClaw CLI.
+ * Delegates all LLM work to OpenClaw's existing model connections and sessions.
  */
-import OpenAI from "openai";
+import { execSync } from "child_process";
 import { getAgentById } from "@/operations/agent-ops";
-import { listTasks, updateTask, claimTask, releaseTask, getTask } from "@/lib/kanban-db";
+import { listTasks, updateTask, claimTask, releaseTask } from "@/lib/kanban-db";
 import { resolveDependencies } from "@/lib/dependency-resolver";
 
 // ---------------------------------------------------------------------------
@@ -15,10 +15,6 @@ import { resolveDependencies } from "@/lib/dependency-resolver";
 interface RunnerConfig {
   agentId: string;
   model: string;
-  systemPrompt: string;
-  temperature: number;
-  maxTokens: number;
-  skills: string[];
   pollIntervalMs: number;
 }
 
@@ -45,78 +41,63 @@ const activeRunners = new Map<string, {
   config: RunnerConfig;
   state: RunnerState;
   timer: ReturnType<typeof setInterval> | null;
-  abortController: AbortController | null;
 }>();
 
 // ---------------------------------------------------------------------------
-// OpenRouter client (lazy init)
+// Core: execute a single task via OpenClaw CLI
 // ---------------------------------------------------------------------------
 
-let openaiClient: OpenAI | null = null;
-
-function getClient(): OpenAI {
-  if (!openaiClient) {
-    const apiKey = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error("OPENROUTER_API_KEY or OPENAI_API_KEY env var is required to run agents");
-    }
-
-    const baseURL = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
-
-    openaiClient = new OpenAI({
-      apiKey,
-      baseURL,
-      defaultHeaders: {
-        "HTTP-Referer": "https://openclaw.ai",
-        "X-Title": "OpenClaw Agent Runner",
-      },
-    });
-  }
-  return openaiClient;
-}
-
-// ---------------------------------------------------------------------------
-// Core: execute a single task via LLM
-// ---------------------------------------------------------------------------
-
-async function executeTask(
-  config: RunnerConfig,
+function executeTaskViaCron(
+  agentId: string,
   taskId: string,
   taskTitle: string,
   taskDescription: string | null,
-  signal: AbortSignal,
-): Promise<{ success: boolean; result: string }> {
-  const client = getClient();
-
-  const userMessage = [
-    `## Task: ${taskTitle}`,
-    taskDescription ? `\n${taskDescription}` : "",
-    `\nComplete this task. Be concise and actionable in your response.`,
+  model?: string,
+): { success: boolean; result: string; cronJobId?: string } {
+  const prompt = [
+    `You are executing Kanban task "${taskTitle}" (ID: ${taskId}).`,
+    taskDescription ? `\nDescription:\n${taskDescription}` : "",
+    `\nComplete this task. When done, summarize what you accomplished.`,
   ].join("");
 
-  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: config.systemPrompt || "You are a helpful agent. Complete tasks efficiently." },
-    { role: "user", content: userMessage },
+  // Escape single quotes for shell
+  const safePrompt = prompt.replace(/'/g, "'\\''");
+  const safeName = `Task: ${taskTitle.slice(0, 50)}`.replace(/'/g, "'\\''");
+
+  // Build openclaw cron command for one-shot isolated execution
+  const parts = [
+    "openclaw cron add",
+    `--name '${safeName}'`,
+    `--at '1m'`,
+    `--session isolated`,
+    `--message '${safePrompt}'`,
+    `--delete-after-run`,
   ];
 
-  try {
-    const response = await client.chat.completions.create(
-      {
-        model: config.model,
-        messages,
-        temperature: config.temperature,
-        max_tokens: config.maxTokens,
-      },
-      { signal },
-    );
+  if (model) {
+    parts.push(`--model '${model}'`);
+  }
 
-    const content = response.choices?.[0]?.message?.content || "(no response)";
-    return { success: true, result: content };
+  const cmd = parts.join(" ");
+
+  try {
+    const output = execSync(cmd, {
+      encoding: "utf-8",
+      timeout: 30_000,
+      env: { ...process.env },
+    });
+
+    // Try to extract the cron job ID from output
+    const idMatch = output.match(/(?:id|ID|job)[:\s]+([a-zA-Z0-9_-]+)/);
+    const cronJobId = idMatch?.[1];
+
+    return {
+      success: true,
+      result: `Task dispatched to OpenClaw session. ${cronJobId ? `Cron job: ${cronJobId}` : ""}`.trim(),
+      cronJobId: cronJobId || undefined,
+    };
   } catch (err: unknown) {
-    if (err instanceof Error && err.name === "AbortError") {
-      return { success: false, result: "Task execution was cancelled" };
-    }
-    const msg = err instanceof Error ? err.message : "Unknown LLM error";
+    const msg = err instanceof Error ? err.message : "Failed to dispatch task via OpenClaw";
     return { success: false, result: msg };
   }
 }
@@ -165,16 +146,15 @@ async function pollCycle(agentId: string): Promise<void> {
     runner.state.currentTaskId = task.id;
     updateTask(task.id, { executionStatus: "running" });
 
-    console.log(`[agent-runner] Agent "${agentId}" executing task "${task.title}" (${task.id})`);
+    console.log(`[agent-runner] Agent "${agentId}" dispatching task "${task.title}" (${task.id})`);
 
-    // 5. Execute via LLM
-    runner.abortController = new AbortController();
-    const result = await executeTask(
-      runner.config,
+    // 5. Execute via OpenClaw CLI (one-shot isolated cron session)
+    const result = executeTaskViaCron(
+      agentId,
       task.id,
       task.title,
       task.description,
-      runner.abortController.signal,
+      runner.config.model,
     );
 
     // 6. Update task with result
@@ -185,7 +165,7 @@ async function pollCycle(agentId: string): Promise<void> {
         status: "done",
       });
       runner.state.tasksCompleted++;
-      console.log(`[agent-runner] Agent "${agentId}" completed task "${task.title}"`);
+      console.log(`[agent-runner] Agent "${agentId}" dispatched task "${task.title}"`);
     } else {
       updateTask(task.id, {
         executionStatus: "error",
@@ -198,7 +178,6 @@ async function pollCycle(agentId: string): Promise<void> {
     // 7. Release claim
     releaseTask(task.id, agentId);
     runner.state.currentTaskId = null;
-    runner.abortController = null;
     runner.state.status = "idle";
 
   } catch (err) {
@@ -214,6 +193,7 @@ async function pollCycle(agentId: string): Promise<void> {
 
 /**
  * Start an agent runner. Polls for tasks at the configured interval.
+ * Delegates task execution to OpenClaw via isolated cron sessions.
  */
 export async function startAgent(agentId: string, overrides?: Partial<RunnerConfig>): Promise<{ success: boolean; error?: string }> {
   if (activeRunners.has(agentId)) {
@@ -231,12 +211,8 @@ export async function startAgent(agentId: string, overrides?: Partial<RunnerConf
   // Build config from agent data + overrides
   const config: RunnerConfig = {
     agentId,
-    model: overrides?.model || agent.model || "anthropic/claude-sonnet-4-20250514",
-    systemPrompt: overrides?.systemPrompt || "You are a helpful agent. Complete tasks efficiently and report results clearly.",
-    temperature: overrides?.temperature ?? 0.7,
-    maxTokens: overrides?.maxTokens ?? 4096,
-    skills: overrides?.skills || [],
-    pollIntervalMs: overrides?.pollIntervalMs || 30_000, // default 30s
+    model: overrides?.model || agent.model || "",
+    pollIntervalMs: overrides?.pollIntervalMs || 30_000,
   };
 
   const state: RunnerState = {
@@ -249,14 +225,14 @@ export async function startAgent(agentId: string, overrides?: Partial<RunnerConf
     error: null,
   };
 
-  // Validate LLM client early
+  // Validate OpenClaw CLI is available
   try {
-    getClient();
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "Failed to init LLM client" };
+    execSync("openclaw --version 2>/dev/null", { encoding: "utf-8", timeout: 5000 });
+  } catch {
+    return { success: false, error: "OpenClaw CLI not found. Make sure 'openclaw' is installed and in PATH." };
   }
 
-  const runner = { config, state, timer: null as ReturnType<typeof setInterval> | null, abortController: null as AbortController | null };
+  const runner = { config, state, timer: null as ReturnType<typeof setInterval> | null };
   activeRunners.set(agentId, runner);
 
   // Start polling
@@ -270,7 +246,7 @@ export async function startAgent(agentId: string, overrides?: Partial<RunnerConf
   // Run first poll immediately
   pollCycle(agentId);
 
-  console.log(`[agent-runner] Started agent "${agentId}" (model: ${config.model}, poll: ${config.pollIntervalMs}ms)`);
+  console.log(`[agent-runner] Started agent "${agentId}" (model: ${config.model || "default"}, poll: ${config.pollIntervalMs}ms)`);
   return { success: true };
 }
 
@@ -288,16 +264,10 @@ export function stopAgent(agentId: string): { success: boolean; error?: string }
     clearInterval(runner.timer);
   }
 
-  // Cancel any in-flight LLM call
-  if (runner.abortController) {
-    runner.abortController.abort();
-  }
-
   // Release any claimed task
   if (runner.state.currentTaskId) {
     try {
       releaseTask(runner.state.currentTaskId, agentId);
-      // Reset execution status back to pending
       updateTask(runner.state.currentTaskId, { executionStatus: "pending" });
     } catch {
       // best effort
