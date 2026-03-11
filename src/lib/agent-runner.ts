@@ -44,7 +44,15 @@ const activeRunners = new Map<string, {
 }>();
 
 // ---------------------------------------------------------------------------
-// Core: create a one-shot cron job and force-run it
+// Helpers
+// ---------------------------------------------------------------------------
+
+function escapeShellArg(arg: string): string {
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+// ---------------------------------------------------------------------------
+// Core: create a one-shot cron job via OpenClaw CLI
 // ---------------------------------------------------------------------------
 
 function createCronJob(
@@ -52,36 +60,46 @@ function createCronJob(
   taskDescription: string | null,
   model?: string,
 ): { success: boolean; jobId?: string; error?: string } {
-  const prompt = [
+  const message = [
     `## Task: ${taskTitle}`,
     taskDescription ? `\n${taskDescription}` : "",
     `\nComplete this task. Be concise and actionable. Summarize what you accomplished.`,
   ].join("");
 
-  // Escape single quotes for shell
-  const safePrompt = prompt.replace(/'/g, "'\\''");
-  const safeName = `Task: ${taskTitle.slice(0, 50)}`.replace(/'/g, "'\\''");
-
-  const parts = [
-    "openclaw cron add",
-    `--name '${safeName}'`,
-    `--at '1m'`,
-    `--session isolated`,
-    `--message '${safePrompt}'`,
-    `--delete-after-run`,
+  const args: string[] = [
+    "openclaw", "cron", "add", "--json",
+    "--name", escapeShellArg(`Task: ${taskTitle.slice(0, 50)}`),
+    "--at", escapeShellArg("1m"),
+    "--session", "isolated",
+    "--message", escapeShellArg(message),
+    "--description", escapeShellArg(taskDescription || taskTitle),
+    "--delete-after-run",
   ];
 
   if (model) {
-    parts.push(`--model '${model}'`);
+    args.push("--model", escapeShellArg(model));
   }
 
+  const command = args.join(" ");
+
   try {
-    const output = execSync(parts.join(" "), {
+    const output = execSync(command, {
       encoding: "utf-8",
       timeout: 15_000,
     });
 
-    // Extract job ID from output (UUID format or alphanumeric)
+    // Try to parse JSON output first
+    try {
+      const data = JSON.parse(output);
+      const jobId = data.id || data.jobId || data.job?.id;
+      if (jobId) {
+        return { success: true, jobId };
+      }
+    } catch {
+      // Fall back to regex extraction
+    }
+
+    // Extract job ID from output (UUID format)
     const idMatch = output.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)
       || output.match(/(?:id|ID|job)[:\s]+([a-zA-Z0-9_-]+)/);
     const jobId = idMatch?.[1];
@@ -94,6 +112,20 @@ function createCronJob(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Failed to create cron job";
     return { success: false, error: msg };
+  }
+}
+
+/**
+ * Delete a cron job (cleanup after execution).
+ */
+function deleteCronJob(jobId: string): void {
+  try {
+    execSync(`openclaw cron rm ${jobId} 2>/dev/null`, {
+      encoding: "utf-8",
+      timeout: 10_000,
+    });
+  } catch {
+    // best effort cleanup
   }
 }
 
@@ -121,6 +153,7 @@ function forceRunAndWait(
       // Timeout check
       if (Date.now() - startTime > timeoutMs) {
         clearInterval(pollTimer);
+        deleteCronJob(jobId);
         resolve({ success: false, result: "Task execution timed out" });
         return;
       }
@@ -141,12 +174,14 @@ function forceRunAndWait(
 
         if (latestRun.status === "success") {
           clearInterval(pollTimer);
+          deleteCronJob(jobId);
           resolve({
             success: true,
             result: latestRun.summary || latestRun.result || latestRun.output || "Task completed successfully",
           });
         } else if (latestRun.status === "error" || latestRun.status === "failed") {
           clearInterval(pollTimer);
+          deleteCronJob(jobId);
           resolve({
             success: false,
             result: latestRun.error || latestRun.result || "Task execution failed",
