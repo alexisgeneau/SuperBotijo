@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 // Types
@@ -17,15 +17,12 @@ interface AgentConfig {
   heartbeatInterval: number;
 }
 
-// Available models
-const AVAILABLE_MODELS = [
-  { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', tier: 'fast' },
-  { id: 'claude-opus-4-20250514', name: 'Claude Opus 4', tier: 'smart' },
-  { id: 'gpt-4o', name: 'GPT-4o', tier: 'balanced' },
-  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', tier: 'fast' },
-  { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', tier: 'fast' },
-  { id: 'zai/glm-5', name: 'GLM-5', tier: 'balanced' },
-];
+// Skill type from API
+interface SkillItem {
+  id: string;
+  name: string;
+  description: string;
+}
 
 // Agent templates
 const AGENT_TEMPLATES = [
@@ -87,16 +84,8 @@ const AGENT_TEMPLATES = [
   },
 ];
 
-// Available skills
-const AVAILABLE_SKILLS = [
-  { id: 'github', name: 'GitHub', description: 'Repo and issue management' },
-  { id: 'browser', name: 'Browser', description: 'Web browsing and scraping' },
-  { id: 'calendar', name: 'Calendar', description: 'Calendar management' },
-  { id: 'email', name: 'Email', description: 'Email sending and reading' },
-  { id: 'weather', name: 'Weather', description: 'Weather information' },
-  { id: 'slack', name: 'Slack', description: 'Slack messaging' },
-  { id: 'telegram', name: 'Telegram', description: 'Telegram messaging' },
-];
+// Common model suggestions for the placeholder
+const MODEL_PLACEHOLDER = 'e.g. anthropic/claude-sonnet-4-20250514';
 
 interface AgentCreateModalProps {
   isOpen: boolean;
@@ -125,6 +114,30 @@ export function AgentCreateModal({ isOpen, onClose, onCreate }: AgentCreateModal
   });
 
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
+  const [availableSkills, setAvailableSkills] = useState<SkillItem[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(false);
+
+  // Fetch skills from API when modal opens
+  useEffect(() => {
+    if (!isOpen) return;
+    setSkillsLoading(true);
+    fetch('/api/skills')
+      .then(res => res.json())
+      .then(data => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const skills: SkillItem[] = (data.skills || []).map((s: any) => ({
+          id: s.id || s.name,
+          name: s.name || s.id,
+          description: s.description || '',
+        }));
+        setAvailableSkills(skills);
+      })
+      .catch(err => {
+        console.error('Failed to fetch skills:', err);
+        setAvailableSkills([]);
+      })
+      .finally(() => setSkillsLoading(false));
+  }, [isOpen]);
 
   const handleTemplateSelect = (templateId: string) => {
     const template = AGENT_TEMPLATES.find(t => t.id === templateId);
@@ -317,17 +330,16 @@ export function AgentCreateModal({ isOpen, onClose, onCreate }: AgentCreateModal
                   <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
                     Model
                   </label>
-                  <select
+                  <input
+                    type="text"
                     value={config.model}
                     onChange={e => setConfig(prev => ({ ...prev, model: e.target.value }))}
-                    className="w-full px-4 py-2 rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 focus:ring-2 focus:ring-info outline-none"
-                  >
-                    {AVAILABLE_MODELS.map(model => (
-                      <option key={model.id} value={model.id}>
-                        {model.name} ({model.tier})
-                      </option>
-                    ))}
-                  </select>
+                    placeholder={MODEL_PLACEHOLDER}
+                    className="w-full px-4 py-2 rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 focus:ring-2 focus:ring-info outline-none font-mono text-sm"
+                  />
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+                    OpenRouter format: provider/model-name
+                  </p>
                 </div>
 
                 <div>
@@ -395,29 +407,43 @@ export function AgentCreateModal({ isOpen, onClose, onCreate }: AgentCreateModal
                 <p className="text-sm text-neutral-600 dark:text-neutral-400">
                   Select skills to enable for this agent
                 </p>
-                <div className="grid grid-cols-2 gap-3">
-                  {AVAILABLE_SKILLS.map(skill => (
-                    <button
-                      key={skill.id}
-                      onClick={() => toggleSkill(skill.id)}
-                      className={`p-3 rounded-lg border text-left transition-all ${
-                        config.skills.includes(skill.id)
-                          ? 'border-info bg-info-soft dark:bg-info-soft'
-                          : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300'
-                      }`}
-                    >
-                      <div className="font-medium text-neutral-900 dark:text-white">
-                        {skill.name}
-                      </div>
-                      <div className="text-sm text-neutral-500 dark:text-neutral-400">
-                        {skill.description}
-                      </div>
-                      {config.skills.includes(skill.id) && (
-                        <span className="text-info text-xs mt-1 block">✓ Selected</span>
-                      )}
-                    </button>
-                  ))}
-                </div>
+                {skillsLoading ? (
+                  <div className="flex items-center justify-center py-8 text-neutral-500">
+                    <svg className="w-5 h-5 animate-spin mr-2" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    Loading skills...
+                  </div>
+                ) : availableSkills.length === 0 ? (
+                  <div className="text-center py-8 text-neutral-500 dark:text-neutral-400">
+                    No skills found. Create skills from the Skills page first.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    {availableSkills.map(skill => (
+                      <button
+                        key={skill.id}
+                        onClick={() => toggleSkill(skill.id)}
+                        className={`p-3 rounded-lg border text-left transition-all ${
+                          config.skills.includes(skill.id)
+                            ? 'border-info bg-info-soft dark:bg-info-soft'
+                            : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300'
+                        }`}
+                      >
+                        <div className="font-medium text-neutral-900 dark:text-white">
+                          {skill.name}
+                        </div>
+                        <div className="text-sm text-neutral-500 dark:text-neutral-400">
+                          {skill.description}
+                        </div>
+                        {config.skills.includes(skill.id) && (
+                          <span className="text-info text-xs mt-1 block">✓ Selected</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </motion.div>
             )}
 
@@ -440,8 +466,8 @@ export function AgentCreateModal({ isOpen, onClose, onCreate }: AgentCreateModal
                   </div>
                   <div className="flex justify-between">
                     <span className="text-neutral-500 dark:text-neutral-400">Model</span>
-                    <span className="font-medium text-neutral-900 dark:text-white">
-                      {AVAILABLE_MODELS.find(m => m.id === config.model)?.name || config.model}
+                    <span className="font-medium text-neutral-900 dark:text-white font-mono text-sm">
+                      {config.model || '(not set)'}
                     </span>
                   </div>
                   <div className="flex justify-between">
