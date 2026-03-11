@@ -7,6 +7,7 @@ import { execSync, exec } from "child_process";
 import { getAgentById } from "@/operations/agent-ops";
 import { listTasks, updateTask, claimTask, releaseTask } from "@/lib/kanban-db";
 import { resolveDependencies } from "@/lib/dependency-resolver";
+import { emitKanbanTaskUpdated, emitNotification } from "@/lib/runtime-events";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,6 +75,7 @@ function createCronJob(
     "--message", escapeShellArg(message),
     "--description", escapeShellArg(taskDescription || taskTitle),
     "--delete-after-run",
+    "--announce",
   ];
 
   if (model) {
@@ -112,6 +114,21 @@ function createCronJob(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Failed to create cron job";
     return { success: false, error: msg };
+  }
+}
+
+/**
+ * Create a persistent notification via the API.
+ */
+async function createNotification(title: string, message: string, type: "info" | "success" | "warning" | "error" = "info") {
+  try {
+    await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}/api/notifications`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, message, type }),
+    });
+  } catch (error) {
+    console.error("[agent-runner] Failed to create notification:", error);
   }
 }
 
@@ -261,7 +278,7 @@ async function pollCycle(agentId: string): Promise<void> {
     // 6. Force-run and wait for actual completion
     const result = await forceRunAndWait(cronResult.jobId);
 
-    // 7. Update task with actual result
+    // 7. Update task with actual result + notify
     if (result.success) {
       updateTask(task.id, {
         executionStatus: "success",
@@ -270,6 +287,25 @@ async function pollCycle(agentId: string): Promise<void> {
       });
       runner.state.tasksCompleted++;
       console.log(`[agent-runner] Agent "${agentId}" completed task "${task.title}"`);
+
+      // Emit events for real-time UI updates
+      emitKanbanTaskUpdated(task.id, task.title, {
+        executionStatus: "success",
+        status: "done",
+      });
+      emitNotification(
+        `task-done-${task.id}`,
+        "Task Completed",
+        `"${task.title}" finished successfully.`,
+        "medium",
+      );
+
+      // Also create a persistent notification via API
+      createNotification(
+        "Task Completed",
+        `"${task.title}" finished successfully. Click to view result.`,
+        "success",
+      );
     } else {
       updateTask(task.id, {
         executionStatus: "error",
@@ -277,6 +313,21 @@ async function pollCycle(agentId: string): Promise<void> {
       });
       runner.state.tasksFailed++;
       console.log(`[agent-runner] Agent "${agentId}" failed task "${task.title}": ${result.result}`);
+
+      emitKanbanTaskUpdated(task.id, task.title, {
+        executionStatus: "error",
+      });
+      emitNotification(
+        `task-error-${task.id}`,
+        "Task Failed",
+        `"${task.title}" failed: ${result.result.slice(0, 100)}`,
+        "high",
+      );
+      createNotification(
+        "Task Failed",
+        `"${task.title}" failed: ${result.result.slice(0, 200)}`,
+        "error",
+      );
     }
 
     // 8. Release claim

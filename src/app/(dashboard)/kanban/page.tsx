@@ -64,6 +64,18 @@ export default function KanbanPage() {
     fetchData();
   }, [fetchData]);
 
+  // Auto-refresh every 10s when there are running or pending tasks
+  const hasActiveTasks = useMemo(
+    () => tasks.some((t) => t.executionStatus === "running" || t.executionStatus === "pending"),
+    [tasks],
+  );
+
+  useEffect(() => {
+    if (!hasActiveTasks) return;
+    const interval = setInterval(fetchData, 10_000);
+    return () => clearInterval(interval);
+  }, [hasActiveTasks, fetchData]);
+
   // Filter tasks by execution status
   const filteredTasks = useMemo(() => {
     if (executionFilter === "all") return tasks;
